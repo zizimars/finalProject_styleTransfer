@@ -1,0 +1,133 @@
+import 'package:flutter/services.dart';
+import 'package:tflite_flutter/tflite_flutter.dart';
+import 'package:image/image.dart' as img;
+import 'package:flutter/material.dart';
+import 'dart:io';
+import 'dart:typed_data';
+
+Future<void> runInference() async {
+  // Load image files
+  var contentImage = await loadImage("assets/original.jpg");
+  var styleImage = await loadImage("assets/picasso.jpg");
+
+  // Initialize the TFLite interpreter
+  var interpreter = await Interpreter.fromAsset("lite-model_deeplabv3_1_metadata_2.tflite");
+
+  // Preprocess the images
+  var contentImgProcessed = preprocessImage(contentImage, 257);
+  var styleImgProcessed = preprocessImage(styleImage, 256);
+
+  // Perform inference
+  var inputTensor = contentImgProcessed.reshape([1, 257, 257, 3]); // Add batch dimension
+  var outputTensor = List.generate(1, (i) => List.generate(257, (j) => List.generate(257, (k) => 0, growable: false)));
+
+  // Run inference on the model
+  interpreter.run(inputTensor, outputTensor);
+
+  // Perform image segmentation
+  var mask3 = outputTensor[0].map((row) => row.map((cell) => cell == 15 ? 1 : 0).toList()).toList();
+  var foregroundMask = applyMask(contentImgProcessed, mask3);
+
+  // Now for style prediction and transfer (similarly handle style transfer models)
+  var styleDescriptor = await predictStyle(styleImgProcessed);
+  var styledContentImg = await applyStyleTransfer(styleDescriptor, contentImgProcessed);
+
+  // Optionally apply color transfer (similar to TensorFlow version)
+  var foregroundTransferred = colorTransfer(foregroundMask, styledContentImg);
+
+  // Blend the final result
+  var finalImage = blendImages(foregroundTransferred, styledContentImg, mask3);
+
+  // Here you can display the result in the Flutter app or save it to a file
+  saveImage(finalImage);
+}
+
+Future<img.Image> loadImage(String path) async {
+  // Load and decode image
+  final imageFile = File(path);
+  final bytes = await imageFile.readAsBytes();
+  final image = img.decodeImage(Uint8List.fromList(bytes))!;
+  return image;
+}
+
+img.Image preprocessImage(img.Image image, int targetSize) {
+  // Resize the image to the target size
+  return img.copyResize(image, width: targetSize, height: targetSize);
+}
+
+Future<List<List<List<int>>>> predictStyle(img.Image styleImage) async {
+  // Load style prediction model
+  var styleInterpreter = await Interpreter.fromAsset("style_pred_model.tflite");
+
+  // Preprocess style image and run inference (similar to above)
+  var styleInput = preprocessImage(styleImage, 256).reshape([1, 256, 256, 3]); // Add batch dimension
+  var styleOutput = List.generate(1, (i) => List.generate(256, (j) => List.generate(256, (k) => 0, growable: false)));
+
+  styleInterpreter.run(styleInput, styleOutput);
+
+  return styleOutput; // Return style descriptor
+}
+
+Future<img.Image> applyStyleTransfer(List<List<List<int>>> styleDescriptor, img.Image contentImage) async {
+  // Load the style transfer model
+  var transferInterpreter = await Interpreter.fromAsset("style_transfer_model_20epochs.tflite");
+
+  var contentInput = preprocessImage(contentImage, 384).reshape([1, 384, 384, 3]); // Add batch dimension
+  var outputTensor = List.generate(1, (i) => List.generate(384, (j) => List.generate(384, (k) => 0, growable: false)));
+
+  transferInterpreter.run([contentInput, styleDescriptor], outputTensor);
+
+  return outputTensor[0]; // Return styled image
+}
+
+img.Image applyMask(img.Image image, List<List<int>> mask) {
+  // Apply the mask to the image
+  var width = image.width;
+  var height = image.height;
+  var result = img.Image(width, height);
+
+  for (int y = 0; y < height; y++) {
+    for (int x = 0; x < width; x++) {
+      if (mask[y][x] == 1) {
+        result.setPixel(x, y, image.getPixel(x, y));
+      } else {
+        result.setPixel(x, y, img.getColor(0, 0, 0)); // Set to black for background
+      }
+    }
+  }
+  return result;
+}
+
+img.Image colorTransfer(img.Image source, img.Image target) {
+  // Implement color transfer (similar to the TensorFlow code)
+  // Here, you can apply any color transfer logic based on source and target images
+  return target; // This is just a placeholder, implement actual color transfer logic.
+}
+
+img.Image blendImages(img.Image foreground, img.Image background, List<List<int>> mask) {
+  // Blend the foreground and background images based on the mask
+  var width = foreground.width;
+  var height = foreground.height;
+  var result = img.Image(width, height);
+
+  for (int y = 0; y < height; y++) {
+    for (int x = 0; x < width; x++) {
+      if (mask[y][x] == 1) {
+        result.setPixel(x, y, foreground.getPixel(x, y));
+      } else {
+        result.setPixel(x, y, background.getPixel(x, y));
+      }
+    }
+  }
+  return result;
+}
+
+void saveImage(img.Image image) {
+  // Save or display the final image
+  final file = File('output_image.jpg');
+  file.writeAsBytesSync(img.encodeJpg(image));
+}
+
+void main() {
+  runInference();
+}
